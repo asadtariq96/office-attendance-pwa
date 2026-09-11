@@ -380,3 +380,28 @@
     padding-top: 1.5rem;
   }
 }
+
+
+.day.holiday {
+  background: color-mix(in srgb, #f59e0b 18%, var(--card));
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.85;
+}
+
+.day.holiday .day-num {
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
+.dot.holiday-dot {
+  background: #d97706;
+}
+
+.swatch.holiday {
+  background: #f59e0b;
+}
+
+.picker.holiday-note {
+  border-color: color-mix(in srgb, #f59e0b 40%, var(--border));
+}

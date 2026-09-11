@@ -1,4 +1,4 @@
-import { listWorkingDaysInMonth, parseISODate, todayISO } from './dates';
+import { listWorkingDaysInMonthExcluding, parseISODate, todayISO } from './dates';
 import type { DayMark } from './storage';
 
 export type MonthStats = {
@@ -129,10 +129,11 @@ export function computeMonthStats(
   monthIndex: number,
   marks: Record<string, DayMark>,
   today: string = todayISO(),
+  holidays: Set<string> = new Set(),
 ): MonthStats {
-  const working = listWorkingDaysInMonth(year, monthIndex);
+  const working = listWorkingDaysInMonthExcluding(year, monthIndex, holidays);
   const workingDays = working.length;
-  const required = Math.ceil(0.6 * workingDays);
+  const required = Math.round(0.6 * workingDays);
   const officeDays = working.filter((d) => marks[d] === 'office');
   const officeCount = officeDays.length;
   const remaining = Math.max(0, required - officeCount);
@@ -149,7 +150,7 @@ export function computeMonthStats(
     // and we're not behind the even pace relative to elapsed working days.
     const elapsed = working.filter((d) => d < today);
     const elapsedOffice = elapsed.filter((d) => marks[d] === 'office').length;
-    const expectedByNow = elapsed.length === 0 ? 0 : Math.ceil(0.6 * elapsed.length);
+    const expectedByNow = elapsed.length === 0 ? 0 : Math.round(0.6 * elapsed.length);
     const canStillMeet = candidates.length >= remaining;
     if (!canStillMeet || elapsedOffice < expectedByNow) {
       status = 'Behind';

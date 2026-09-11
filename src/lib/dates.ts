@@ -50,3 +50,13 @@ export function shiftMonth(year: number, monthIndex: number, delta: number): {
   const d = new Date(year, monthIndex + delta, 1);
   return { year: d.getFullYear(), monthIndex: d.getMonth() };
 }
+
+
+/** Mon–Fri excluding public holidays. */
+export function listWorkingDaysInMonthExcluding(
+  year: number,
+  monthIndex: number,
+  holidays: Set<string>,
+): string[] {
+  return listWorkingDaysInMonth(year, monthIndex).filter((iso) => !holidays.has(iso));
+}

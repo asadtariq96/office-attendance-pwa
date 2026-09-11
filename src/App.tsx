@@ -9,6 +9,10 @@ import {
   todayISO,
 } from './lib/dates';
 import {
+  ensureFinnishHolidays,
+  type Holiday,
+} from './lib/holidays';
+import {
   cycleMark,
   loadStore,
   saveStore,
@@ -25,33 +29,67 @@ function App() {
   const [monthIndex, setMonthIndex] = useState(now.getMonth());
   const [store, setStore] = useState<AttendanceStore>(() => loadStore());
   const [pickerDay, setPickerDay] = useState<string | null>(null);
+  const [holidays, setHolidays] = useState<Record<string, Holiday>>({});
   const today = todayISO();
 
   useEffect(() => {
     saveStore(store);
   }, [store]);
 
+  // Fetch FI public holidays for visible month year ±1 (covers month edges / navigation)
+  useEffect(() => {
+    let cancelled = false;
+    ensureFinnishHolidays([year - 1, year, year + 1]).then((map) => {
+      if (!cancelled) setHolidays(map);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [year]);
+
+  // Strip any office/not_office marks that landed on holidays
+  useEffect(() => {
+    const holidayDates = Object.keys(holidays);
+    if (holidayDates.length === 0) return;
+    setStore((prev) => {
+      let changed = false;
+      const marks = { ...prev.marks };
+      for (const d of holidayDates) {
+        if (marks[d] !== undefined) {
+          delete marks[d];
+          changed = true;
+        }
+      }
+      return changed ? { marks } : prev;
+    });
+  }, [holidays]);
+
+  const holidayDates = useMemo(() => new Set(Object.keys(holidays)), [holidays]);
+
   const stats = useMemo(
-    () => computeMonthStats(year, monthIndex, store.marks, today),
-    [year, monthIndex, store.marks, today],
+    () => computeMonthStats(year, monthIndex, store.marks, today, holidayDates),
+    [year, monthIndex, store.marks, today, holidayDates],
   );
 
   const suggestedSet = useMemo(() => new Set(stats.suggested), [stats.suggested]);
 
-  const setMark = useCallback((iso: string, mark: DayMark | undefined) => {
-    setStore((prev) => {
-      const marks = { ...prev.marks };
-      if (mark === undefined) delete marks[iso];
-      else marks[iso] = mark;
-      return { marks };
-    });
-    setPickerDay(null);
-  }, []);
+  const setMark = useCallback(
+    (iso: string, mark: DayMark | undefined) => {
+      if (holidayDates.has(iso)) return;
+      setStore((prev) => {
+        const marks = { ...prev.marks };
+        if (mark === undefined) delete marks[iso];
+        else marks[iso] = mark;
+        return { marks };
+      });
+      setPickerDay(null);
+    },
+    [holidayDates],
+  );
 
   const onDayClick = useCallback(
     (iso: string, working: boolean) => {
-      if (!working) return;
-      // Quick cycle on tap; long-press alternative via picker buttons in panel
+      if (!working || holidayDates.has(iso)) return;
       setStore((prev) => {
         const next = cycleMark(prev.marks[iso]);
         const marks = { ...prev.marks };
@@ -61,7 +99,7 @@ function App() {
       });
       setPickerDay(iso);
     },
-    [],
+    [holidayDates],
   );
 
   const go = (delta: number) => {
@@ -73,7 +111,6 @@ function App() {
 
   const cells = useMemo(() => {
     const first = new Date(year, monthIndex, 1);
-    // Monday-first offset: Mon=0 … Sun=6
     const jsDay = first.getDay();
     const offset = jsDay === 0 ? 6 : jsDay - 1;
     const total = daysInMonth(year, monthIndex);
@@ -82,35 +119,46 @@ function App() {
       dayNum: number | null;
       working: boolean;
       weekend: boolean;
+      holiday: boolean;
+      holidayName?: string;
     }> = [];
     for (let i = 0; i < offset; i++) {
-      items.push({ iso: null, dayNum: null, working: false, weekend: false });
+      items.push({ iso: null, dayNum: null, working: false, weekend: false, holiday: false });
     }
     for (let d = 1; d <= total; d++) {
       const date = new Date(year, monthIndex, d);
       const iso = toISODate(date);
-      const working = isWorkingDay(date);
+      const weekend = !isWorkingDay(date);
+      const holiday = holidayDates.has(iso);
+      const h = holidays[iso];
       items.push({
         iso,
         dayNum: d,
-        working,
-        weekend: !working,
+        working: !weekend && !holiday,
+        weekend,
+        holiday,
+        holidayName: h?.localName ?? h?.name,
       });
     }
     while (items.length % 7 !== 0) {
-      items.push({ iso: null, dayNum: null, working: false, weekend: false });
+      items.push({ iso: null, dayNum: null, working: false, weekend: false, holiday: false });
     }
     return items;
-  }, [year, monthIndex]);
+  }, [year, monthIndex, holidayDates, holidays]);
 
   const statusClass =
     stats.status === 'Done' ? 'status-done' : stats.status === 'Behind' ? 'status-behind' : 'status-track';
+
+  const pickerIsMarkable =
+    pickerDay &&
+    !holidayDates.has(pickerDay) &&
+    isWorkingDay(parseLocal(pickerDay));
 
   return (
     <div className="app">
       <header className="header">
         <h1>Office Attendance</h1>
-        <p className="subtitle">Track hybrid office days · 60% target</p>
+        <p className="subtitle">Track hybrid office days · 60% target · FI holidays</p>
       </header>
 
       <section className="calendar-card" aria-label="Month calendar">
@@ -142,7 +190,9 @@ function App() {
             const isSuggested = suggestedSet.has(cell.iso);
             const classes = [
               'day',
-              cell.weekend ? 'weekend' : 'working',
+              cell.weekend ? 'weekend' : '',
+              cell.holiday ? 'holiday' : '',
+              cell.working ? 'working' : '',
               mark === 'office' ? 'office' : '',
               mark === 'not_office' ? 'not-office' : '',
               !mark && isSuggested ? 'suggested' : '',
@@ -157,14 +207,24 @@ function App() {
                 key={cell.iso}
                 type="button"
                 className={classes}
-                disabled={cell.weekend}
+                disabled={!cell.working}
+                title={cell.holidayName}
                 onClick={() => onDayClick(cell.iso!, cell.working)}
-                aria-label={`${cell.iso}${mark ? `, ${mark}` : isSuggested ? ', suggested' : ''}`}
+                aria-label={`${cell.iso}${
+                  cell.holiday
+                    ? `, holiday ${cell.holidayName ?? ''}`
+                    : mark
+                      ? `, ${mark}`
+                      : isSuggested
+                        ? ', suggested'
+                        : ''
+                }`}
               >
                 <span className="day-num">{cell.dayNum}</span>
+                {cell.holiday && <span className="dot holiday-dot" />}
                 {mark === 'office' && <span className="dot office-dot" />}
                 {mark === 'not_office' && <span className="dot not-dot" />}
-                {!mark && isSuggested && <span className="dot suggested-dot" />}
+                {!mark && !cell.holiday && isSuggested && <span className="dot suggested-dot" />}
               </button>
             );
           })}
@@ -174,28 +234,40 @@ function App() {
           <span><i className="swatch office" /> Office</span>
           <span><i className="swatch not-office" /> Not office</span>
           <span><i className="swatch suggested" /> Suggested</span>
+          <span><i className="swatch holiday" /> Holiday</span>
           <span><i className="swatch today" /> Today</span>
         </div>
 
-        {pickerDay && isWorkingDay(parseLocal(pickerDay)) && (
+        {pickerIsMarkable && (
           <div className="picker" role="group" aria-label={`Set mark for ${pickerDay}`}>
             <div className="picker-label">{pickerDay}</div>
             <div className="picker-actions">
-              <button type="button" className="pill office" onClick={() => setMark(pickerDay, 'office')}>
+              <button type="button" className="pill office" onClick={() => setMark(pickerDay!, 'office')}>
                 Office
               </button>
               <button
                 type="button"
                 className="pill not-office"
-                onClick={() => setMark(pickerDay, 'not_office')}
+                onClick={() => setMark(pickerDay!, 'not_office')}
               >
                 Not office
               </button>
-              <button type="button" className="pill clear" onClick={() => setMark(pickerDay, undefined)}>
+              <button type="button" className="pill clear" onClick={() => setMark(pickerDay!, undefined)}>
                 Clear
               </button>
             </div>
             <p className="hint">Tip: tap a day to cycle Unset → Office → Not office → Clear</p>
+          </div>
+        )}
+
+        {pickerDay && holidayDates.has(pickerDay) && (
+          <div className="picker holiday-note" role="status">
+            <div className="picker-label">{pickerDay}</div>
+            <p className="hint">
+              Finnish public holiday
+              {holidays[pickerDay] ? `: ${holidays[pickerDay].localName}` : ''}. Not countable as an
+              office day.
+            </p>
           </div>
         )}
       </section>
@@ -227,7 +299,7 @@ function App() {
           <div
             className="progress-bar"
             style={{
-              width: `${stats.workingDays === 0 ? 0 : Math.min(100, (stats.officeCount / stats.required) * 100)}%`,
+              width: `${stats.required === 0 ? 0 : Math.min(100, (stats.officeCount / stats.required) * 100)}%`,
             }}
           />
         </div>
@@ -254,7 +326,10 @@ function App() {
       </section>
 
       <footer className="footer">
-        <p>Data stays on this device (localStorage). Install from your browser for offline use.</p>
+        <p>
+          Data stays on this device (localStorage). Finnish public holidays from Nager.Date. Install
+          from your browser for offline use.
+        </p>
       </footer>
     </div>
   );
